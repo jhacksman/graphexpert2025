@@ -9,6 +9,23 @@ import {
 import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { z } from 'zod';
+
+import {
+  Entity,
+  Relation,
+  KnowledgeGraph,
+  entitySchema,
+  relationSchema,
+  createEntitiesInputSchema,
+  createRelationsInputSchema,
+  addObservationsInputSchema,
+  deleteEntitiesInputSchema,
+  deleteObservationsInputSchema,
+  deleteRelationsInputSchema,
+  searchNodesInputSchema,
+  openNodesInputSchema
+} from "./schemas.js";
 
 // Define memory file path using environment variable with fallback
 const defaultMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.json');
@@ -19,24 +36,6 @@ const MEMORY_FILE_PATH = process.env.MEMORY_FILE_PATH
     ? process.env.MEMORY_FILE_PATH
     : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.MEMORY_FILE_PATH)
   : defaultMemoryPath;
-
-// We are storing our memory using entities, relations, and observations in a graph structure
-interface Entity {
-  name: string;
-  entityType: string;
-  observations: string[];
-}
-
-interface Relation {
-  from: string;
-  to: string;
-  relationType: string;
-}
-
-interface KnowledgeGraph {
-  entities: Entity[];
-  relations: Relation[];
-}
 
 // The KnowledgeGraphManager class contains all operations to interact with the knowledge graph
 class KnowledgeGraphManager {
@@ -67,16 +66,20 @@ class KnowledgeGraphManager {
   }
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
+    const validatedEntities = entities.map(entity => entitySchema.parse(entity));
+    
     const graph = await this.loadGraph();
-    const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name));
+    const newEntities = validatedEntities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name));
     graph.entities.push(...newEntities);
     await this.saveGraph(graph);
     return newEntities;
   }
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
+    const validatedRelations = relations.map(relation => relationSchema.parse(relation));
+    
     const graph = await this.loadGraph();
-    const newRelations = relations.filter(r => !graph.relations.some(existingRelation => 
+    const newRelations = validatedRelations.filter(r => !graph.relations.some(existingRelation => 
       existingRelation.from === r.from && 
       existingRelation.to === r.to && 
       existingRelation.relationType === r.relationType
@@ -380,30 +383,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     throw new Error(`No arguments provided for tool: ${name}`);
   }
 
-  switch (name) {
-    case "create_entities":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.createEntities(args.entities as Entity[]), null, 2) }] };
-    case "create_relations":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.createRelations(args.relations as Relation[]), null, 2) }] };
-    case "add_observations":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.addObservations(args.observations as { entityName: string; contents: string[] }[]), null, 2) }] };
-    case "delete_entities":
-      await knowledgeGraphManager.deleteEntities(args.entityNames as string[]);
-      return { content: [{ type: "text", text: "Entities deleted successfully" }] };
-    case "delete_observations":
-      await knowledgeGraphManager.deleteObservations(args.deletions as { entityName: string; observations: string[] }[]);
-      return { content: [{ type: "text", text: "Observations deleted successfully" }] };
-    case "delete_relations":
-      await knowledgeGraphManager.deleteRelations(args.relations as Relation[]);
-      return { content: [{ type: "text", text: "Relations deleted successfully" }] };
-    case "read_graph":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.readGraph(), null, 2) }] };
-    case "search_nodes":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.searchNodes(args.query as string), null, 2) }] };
-    case "open_nodes":
-      return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.openNodes(args.names as string[]), null, 2) }] };
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+  try {
+    switch (name) {
+      case "create_entities": {
+        const validatedInput = createEntitiesInputSchema.parse(args);
+        const createdEntities = await knowledgeGraphManager.createEntities(validatedInput.entities);
+        return { content: [{ type: "text", text: JSON.stringify(createdEntities, null, 2) }] };
+      }
+      case "create_relations": {
+        const validatedInput = createRelationsInputSchema.parse(args);
+        const createdRelations = await knowledgeGraphManager.createRelations(validatedInput.relations);
+        return { content: [{ type: "text", text: JSON.stringify(createdRelations, null, 2) }] };
+      }
+      case "add_observations": {
+        const validatedInput = addObservationsInputSchema.parse(args);
+        const result = await knowledgeGraphManager.addObservations(validatedInput.observations);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      case "delete_entities": {
+        const validatedInput = deleteEntitiesInputSchema.parse(args);
+        await knowledgeGraphManager.deleteEntities(validatedInput.entityNames);
+        return { content: [{ type: "text", text: "Entities deleted successfully" }] };
+      }
+      case "delete_observations": {
+        const validatedInput = deleteObservationsInputSchema.parse(args);
+        await knowledgeGraphManager.deleteObservations(validatedInput.deletions);
+        return { content: [{ type: "text", text: "Observations deleted successfully" }] };
+      }
+      case "delete_relations": {
+        const validatedInput = deleteRelationsInputSchema.parse(args);
+        await knowledgeGraphManager.deleteRelations(validatedInput.relations);
+        return { content: [{ type: "text", text: "Relations deleted successfully" }] };
+      }
+      case "read_graph":
+        return { content: [{ type: "text", text: JSON.stringify(await knowledgeGraphManager.readGraph(), null, 2) }] };
+      case "search_nodes": {
+        const validatedInput = searchNodesInputSchema.parse(args);
+        const result = await knowledgeGraphManager.searchNodes(validatedInput.query);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      case "open_nodes": {
+        const validatedInput = openNodesInputSchema.parse(args);
+        const result = await knowledgeGraphManager.openNodes(validatedInput.names);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      }
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return {
+        content: [{
+          type: "text",
+          text: `Validation error: ${error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ')}`
+        }]
+      };
+    }
+    throw error;
   }
 });
 
